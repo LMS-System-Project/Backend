@@ -88,6 +88,8 @@ CREATE POLICY "Instructors can view enrollments for their courses" ON enrollment
         AND courses.instructor_id = auth.uid()
     )
   );
+CREATE POLICY "Students can view their own enrollments" ON enrollments
+  FOR SELECT USING (auth.uid() = student_id);
 
 -- Assignments
 CREATE POLICY "Instructors manage assignments for their courses" ON assignments
@@ -96,6 +98,14 @@ CREATE POLICY "Instructors manage assignments for their courses" ON assignments
       SELECT 1 FROM courses
       WHERE courses.id = assignments.course_id
         AND courses.instructor_id = auth.uid()
+    )
+  );
+CREATE POLICY "Students can view assignments for enrolled courses" ON assignments
+  FOR SELECT USING (
+    EXISTS (
+      SELECT 1 FROM enrollments
+      WHERE enrollments.course_id = assignments.course_id
+        AND enrollments.student_id = auth.uid()
     )
   );
 
@@ -109,3 +119,5 @@ CREATE POLICY "Instructors view submissions for their courses" ON submissions
         AND courses.instructor_id = auth.uid()
     )
   );
+CREATE POLICY "Students can manage their own submissions" ON submissions
+  FOR ALL USING (auth.uid() = student_id);

@@ -1,8 +1,6 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 from database import get_supabase_admin
-from config import SUPABASE_KEY
 
 security = HTTPBearer()
 
@@ -12,15 +10,12 @@ async def get_current_user(
 ) -> dict:
     """
     Validate the Supabase JWT from the Authorization header.
-    Returns the user profile dict from the profiles table.
+    Returns the user profile dict from the profiles table, enriched with
+    the email from Supabase Auth (since the profiles table has no email column).
     """
     token = credentials.credentials
 
     try:
-        # Supabase JWTs are signed with the JWT secret which equals the
-        # anon key for verification. We decode to get the 'sub' (user id).
-        # For Supabase, the JWT secret is derived from the project.
-        # We'll verify by calling Supabase's auth.get_user() with the token.
         supabase = get_supabase_admin()
         user_response = supabase.auth.get_user(token)
 
@@ -30,7 +25,8 @@ async def get_current_user(
                 detail="Invalid or expired token",
             )
 
-        user_id = user_response.user.id
+        auth_user = user_response.user
+        user_id = auth_user.id
 
         # Fetch the profile from the profiles table
         profile = (
@@ -47,7 +43,11 @@ async def get_current_user(
                 detail="User profile not found",
             )
 
-        return profile.data
+        # Enrich with the email from auth.users (profiles table has no email)
+        profile_data = profile.data
+        profile_data["email"] = auth_user.email or ""
+
+        return profile_data
 
     except HTTPException:
         raise

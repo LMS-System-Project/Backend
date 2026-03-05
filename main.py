@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import auth, courses, dashboard, analytics, students, grading, settings
+from routers import auth, courses, dashboard, analytics, students, grading, settings, student
 
 app = FastAPI(
     title="GradeFlow API",
@@ -29,6 +29,7 @@ app.include_router(analytics.router)
 app.include_router(students.router)
 app.include_router(grading.router)
 app.include_router(settings.router)
+app.include_router(student.router)
 
 
 @app.get("/")

@@ -11,6 +11,7 @@ async def get_profile(current_user: dict = Depends(get_current_user)):
     """Get the instructor's profile."""
     return ProfileResponse(
         id=current_user["id"],
+        email=current_user.get("email"),
         full_name=current_user["full_name"],
         role=current_user["role"],
         department=current_user.get("department"),

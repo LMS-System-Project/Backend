@@ -195,25 +195,24 @@ async def list_submissions(current_user: dict = Depends(get_current_user)):
             .execute()
         )
 
+        submissions = submissions_resp.data or []
+
+        # Batch: fetch all student profiles referenced in submissions
+        student_ids = list({s["student_id"] for s in submissions})
+        student_map = {}
+        if student_ids:
+            profiles_resp = (
+                admin.table("profiles")
+                .select("id, full_name")
+                .in_("id", student_ids)
+                .execute()
+            )
+            student_map = {p["id"]: p["full_name"] for p in (profiles_resp.data or [])}
+
         result = []
-        for s in submissions_resp.data or []:
+        for s in submissions:
             assignment = assignment_map.get(s["assignment_id"], {})
             course = course_map.get(assignment.get("course_id", ""), {})
-
-            # Get student name
-            student_name = "Unknown"
-            try:
-                student_resp = (
-                    admin.table("profiles")
-                    .select("full_name")
-                    .eq("id", s["student_id"])
-                    .single()
-                    .execute()
-                )
-                if student_resp.data:
-                    student_name = student_resp.data["full_name"]
-            except Exception:
-                pass
 
             result.append(
                 SubmissionResponse(
@@ -222,7 +221,7 @@ async def list_submissions(current_user: dict = Depends(get_current_user)):
                     assignment_title=assignment.get("title"),
                     course_code=course.get("code"),
                     student_id=s["student_id"],
-                    student_name=student_name,
+                    student_name=student_map.get(s["student_id"], "Unknown"),
                     status=s["status"],
                     grade=s.get("grade"),
                     submitted_at=s.get("submitted_at"),

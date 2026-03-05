@@ -66,6 +66,7 @@ class DashboardStats(BaseModel):
     total_students: int
     pending_reviews: int
     class_average: str
+    avg_attendance: str = "N/A"
 
 
 # ── Analytics Schemas ─────────────────────────────────────────
@@ -152,4 +153,55 @@ class ProfileResponse(BaseModel):
     role: str
     department: Optional[str] = None
     created_at: Optional[str] = None
+
+
+# ── Student-specific Schemas ──────────────────────────────────
+
+class StudentDashboardStats(BaseModel):
+    enrolled_courses: int
+    pending_assignments: int
+    submitted_assignments: int
+    graded_assignments: int
+    average_grade: str
+
+
+class StudentCourseResponse(BaseModel):
+    id: str
+    code: str
+    title: str
+    description: Optional[str] = None
+    status: str
+    instructor_name: Optional[str] = None
+    total_assignments: int = 0
+    submitted_assignments: int = 0
+    progress: int = 0
+    enrolled_at: Optional[str] = None
+
+
+class StudentAssignmentResponse(BaseModel):
+    id: str
+    course_id: str
+    course_code: Optional[str] = None
+    course_title: Optional[str] = None
+    title: str
+    due_date: Optional[str] = None
+    created_at: Optional[str] = None
+    submission_status: str = "not_submitted"
+    grade: Optional[str] = None
+    submitted_at: Optional[str] = None
+    submission_id: Optional[str] = None
+
+
+class StudentSubmitRequest(BaseModel):
+    notes: Optional[str] = None  # optional submission note
+
+
+class StudentSubmissionResponse(BaseModel):
+    id: str
+    assignment_id: str
+    assignment_title: Optional[str] = None
+    student_id: str
+    status: str
+    grade: Optional[str] = None
+    submitted_at: Optional[str] = None
 
