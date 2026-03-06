@@ -107,6 +107,9 @@ class StudentResponse(BaseModel):
 class AssignmentCreate(BaseModel):
     course_id: str
     title: str
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    max_marks: int = 100
     due_date: Optional[str] = None
 
 
@@ -116,6 +119,9 @@ class AssignmentResponse(BaseModel):
     course_code: Optional[str] = None
     course_title: Optional[str] = None
     title: str
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    max_marks: int = 100
     due_date: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -131,6 +137,9 @@ class SubmissionResponse(BaseModel):
     student_name: Optional[str] = None
     status: str
     grade: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    notes: Optional[str] = None
     submitted_at: Optional[str] = None
 
 
@@ -204,4 +213,91 @@ class StudentSubmissionResponse(BaseModel):
     status: str
     grade: Optional[str] = None
     submitted_at: Optional[str] = None
+
+
+# ── AI Chat Schemas ───────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    response: str
+
+
+# ── Career Hub Schemas ────────────────────────────────────────
+
+class ResumeRequest(BaseModel):
+    include_skills: bool = True
+    include_courses: bool = True
+    target_role: Optional[str] = None
+
+
+class ResumeResponse(BaseModel):
+    resume_markdown: str
+    skills: List[str]
+    courses: List[str]
+
+
+class JobListing(BaseModel):
+    id: str
+    title: str
+    company: str
+    location: str
+    type: str  # internship, full-time, part-time
+    skills: List[str]
+    description: str
+    apply_url: str
+
+
+# ── CollabMesh Schemas ────────────────────────────────────────
+
+class StudyGroup(BaseModel):
+    id: str
+    course_id: str
+    course_title: str
+    course_code: str
+    member_count: int
+    members: List[dict]
+
+
+class StudyPartner(BaseModel):
+    id: str
+    full_name: str
+    shared_courses: List[str]
+    match_score: int  # Number of shared courses
+
+
+# ── Course Catalog & Materials Schemas ────────────────────────
+
+class CatalogCourseResponse(BaseModel):
+    id: str
+    code: str
+    title: str
+    description: Optional[str] = None
+    status: str
+    instructor_name: Optional[str] = None
+    student_count: int = 0
+    is_enrolled: bool = False
+    created_at: Optional[str] = None
+
+
+class CourseMaterialResponse(BaseModel):
+    id: str
+    course_id: str
+    title: str
+    description: Optional[str] = None
+    file_name: str
+    file_url: str
+    file_size: int = 0
+    uploaded_by: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class EnrollmentResponse(BaseModel):
+    id: str
+    course_id: str
+    student_id: str
+    enrolled_at: Optional[str] = None
+
 

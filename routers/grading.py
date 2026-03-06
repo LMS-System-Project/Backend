@@ -1,11 +1,12 @@
-from fastapi import APIRouter, HTTPException, status, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException, status, Depends, UploadFile, File, Form
+from typing import List, Optional
 from database import get_supabase_admin
 from schemas import (
     AssignmentCreate,
     AssignmentResponse,
     SubmissionResponse,
     GradeSubmission,
+    CourseMaterialResponse,
 )
 from auth import get_current_user
 
@@ -56,6 +57,9 @@ async def list_assignments(current_user: dict = Depends(get_current_user)):
                     course_code=course.get("code"),
                     course_title=course.get("title"),
                     title=a["title"],
+                    description=a.get("description"),
+                    instructions=a.get("instructions"),
+                    max_marks=a.get("max_marks", 100),
                     due_date=a.get("due_date"),
                     created_at=a.get("created_at"),
                 )
@@ -113,6 +117,12 @@ async def create_assignment(
         }
         if assignment.due_date:
             insert_data["due_date"] = assignment.due_date
+        if assignment.description:
+            insert_data["description"] = assignment.description
+        if assignment.instructions:
+            insert_data["instructions"] = assignment.instructions
+        if assignment.max_marks is not None:
+            insert_data["max_marks"] = assignment.max_marks
 
         new_assignment = (
             admin.table("assignments").insert(insert_data).execute()
@@ -132,6 +142,9 @@ async def create_assignment(
             course_code=course.get("code"),
             course_title=course.get("title"),
             title=a["title"],
+            description=a.get("description"),
+            instructions=a.get("instructions"),
+            max_marks=a.get("max_marks", 100),
             due_date=a.get("due_date"),
             created_at=a.get("created_at"),
         )
@@ -224,6 +237,9 @@ async def list_submissions(current_user: dict = Depends(get_current_user)):
                     student_name=student_map.get(s["student_id"], "Unknown"),
                     status=s["status"],
                     grade=s.get("grade"),
+                    file_url=s.get("file_url"),
+                    file_name=s.get("file_name"),
+                    notes=s.get("notes"),
                     submitted_at=s.get("submitted_at"),
                 )
             )
@@ -339,6 +355,9 @@ async def grade_submission(
             student_name=student_name,
             status=s["status"],
             grade=s.get("grade"),
+            file_url=s.get("file_url"),
+            file_name=s.get("file_name"),
+            notes=s.get("notes"),
             submitted_at=s.get("submitted_at"),
         )
 
@@ -348,4 +367,184 @@ async def grade_submission(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to grade submission: {str(e)}",
+        )
+
+
+# ── Course Materials ──────────────────────────────────────────────────────────
+
+def _require_instructor(current_user: dict):
+    if current_user["role"] != "instructor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only instructors can access this endpoint",
+        )
+
+
+@router.post(
+    "/courses/{course_id}/materials",
+    response_model=CourseMaterialResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_material(
+    course_id: str,
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a study material for a course."""
+    _require_instructor(current_user)
+
+    try:
+        admin = get_supabase_admin()
+
+        # Verify course ownership
+        course_resp = (
+            admin.table("courses")
+            .select("id")
+            .eq("id", course_id)
+            .eq("instructor_id", current_user["id"])
+            .single()
+            .execute()
+        )
+        if not course_resp.data:
+            raise HTTPException(status_code=404, detail="Course not found or not owned by you")
+
+        # Upload file
+        from storage import upload_file as store_file, get_file_size
+        file_size = get_file_size(file)
+        file_name, file_url = await store_file(file, folder="materials")
+
+        # Save to database
+        result = (
+            admin.table("course_materials")
+            .insert({
+                "course_id": course_id,
+                "title": title,
+                "description": description,
+                "file_name": file_name,
+                "file_url": file_url,
+                "file_size": file_size,
+                "uploaded_by": current_user["id"],
+            })
+            .execute()
+        )
+
+        m = result.data[0]
+        return CourseMaterialResponse(
+            id=m["id"],
+            course_id=m["course_id"],
+            title=m["title"],
+            description=m.get("description"),
+            file_name=m["file_name"],
+            file_url=m["file_url"],
+            file_size=m.get("file_size", 0),
+            uploaded_by=m.get("uploaded_by"),
+            created_at=m.get("created_at"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload material: {str(e)}",
+        )
+
+
+@router.get("/courses/{course_id}/materials", response_model=List[CourseMaterialResponse])
+async def list_materials(
+    course_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all materials for a course."""
+    _require_instructor(current_user)
+
+    try:
+        admin = get_supabase_admin()
+
+        # Verify course ownership
+        course_resp = (
+            admin.table("courses")
+            .select("id")
+            .eq("id", course_id)
+            .eq("instructor_id", current_user["id"])
+            .single()
+            .execute()
+        )
+        if not course_resp.data:
+            raise HTTPException(status_code=404, detail="Course not found or not owned by you")
+
+        materials_resp = (
+            admin.table("course_materials")
+            .select("*")
+            .eq("course_id", course_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        return [
+            CourseMaterialResponse(
+                id=m["id"],
+                course_id=m["course_id"],
+                title=m["title"],
+                description=m.get("description"),
+                file_name=m["file_name"],
+                file_url=m["file_url"],
+                file_size=m.get("file_size", 0),
+                uploaded_by=m.get("uploaded_by"),
+                created_at=m.get("created_at"),
+            )
+            for m in (materials_resp.data or [])
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch materials: {str(e)}",
+        )
+
+
+@router.delete("/materials/{material_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_material(
+    material_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a study material."""
+    _require_instructor(current_user)
+
+    try:
+        admin = get_supabase_admin()
+
+        # Fetch material and verify ownership
+        mat_resp = (
+            admin.table("course_materials")
+            .select("*, courses(instructor_id)")
+            .eq("id", material_id)
+            .single()
+            .execute()
+        )
+
+        if not mat_resp.data:
+            raise HTTPException(status_code=404, detail="Material not found")
+
+        course_data = mat_resp.data.get("courses", {})
+        if course_data.get("instructor_id") != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Not your course material")
+
+        # Delete file from storage
+        from storage import delete_file as remove_file
+        await remove_file(mat_resp.data["file_url"])
+
+        # Delete from database
+        admin.table("course_materials").delete().eq("id", material_id).execute()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete material: {str(e)}",
         )
