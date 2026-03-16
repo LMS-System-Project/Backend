@@ -4,12 +4,67 @@ from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from contextlib import asynccontextmanager
 from pathlib import Path
 import os
+import logging
+
+logger = logging.getLogger("gradeflow")
 
 from config import RATE_LIMIT_PER_MINUTE
+from database import get_supabase_admin
 
 from routers import auth, courses, dashboard, analytics, students, grading, settings, student, admin
+
+ADMIN_EMAIL = "admin@email.com"
+ADMIN_PASSWORD = "admin"
+ADMIN_NAME = "System Administrator"
+
+
+def _seed_admin():
+    """Ensure the default admin account exists. Called once at startup."""
+    try:
+        sb = get_supabase_admin()
+
+        # Check if already exists in profiles
+        existing = sb.table("profiles").select("id").eq("role", "admin").limit(1).execute()
+        if existing.data:
+            logger.info("Admin account already exists — skipping seed.")
+            return
+
+        # Create the Supabase auth user
+        user_resp = sb.auth.admin.create_user({
+            "email": ADMIN_EMAIL,
+            "password": ADMIN_PASSWORD,
+            "email_confirm": True,
+            "user_metadata": {"full_name": ADMIN_NAME, "role": "admin"},
+        })
+
+        if not user_resp.user:
+            logger.error("Failed to create admin auth user.")
+            return
+
+        uid = str(user_resp.user.id)
+
+        # Insert profile
+        sb.table("profiles").insert({
+            "id": uid,
+            "full_name": ADMIN_NAME,
+            "role": "admin",
+            "department": None,
+        }).execute()
+
+        logger.info(f"Admin account created: {ADMIN_EMAIL}")
+
+    except Exception as exc:
+        # Non-fatal — server still starts
+        logger.warning(f"Admin seed skipped (may already exist): {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _seed_admin()
+    yield
 
 # ── Rate Limiter ──────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=[f"{RATE_LIMIT_PER_MINUTE}/minute"])
@@ -19,6 +74,7 @@ app = FastAPI(
     title="GradeFlow API",
     description="Combined LMS Backend — Auth, Instructor, Student, Admin, AI, Career Hub, CollabMesh",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.state.limiter = limiter

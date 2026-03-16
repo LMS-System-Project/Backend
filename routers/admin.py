@@ -1,295 +1,308 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 
-from database import get_supabase_admin
+from database import get_supabase_client, get_supabase_admin
 from auth import require_role
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
 
-# ── Response Models ───────────────────────────────────────────
+# ── Request / Response Models ─────────────────────────────────
 
 class AdminDashboardResponse(BaseModel):
     total_students: int = 0
     total_instructors: int = 0
+    total_admins: int = 0
     active_courses: int = 0
+    draft_courses: int = 0
     total_assignments: int = 0
+    total_submissions: int = 0
+    graded_submissions: int = 0
     pending_submissions: int = 0
 
 
 class AdminUserResponse(BaseModel):
     id: str
+    email: str = ""
     full_name: str
     role: str
     department: Optional[str] = None
     created_at: Optional[str] = None
 
 
-# ── Admin Endpoints ───────────────────────────────────────────
+class AdminCourseResponse(BaseModel):
+    id: str
+    code: str
+    title: str
+    description: Optional[str] = None
+    status: str
+    instructor_id: str
+    instructor_name: str = ""
+    student_count: int = 0
+    created_at: Optional[str] = None
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: str = "student"
+    department: Optional[str] = None
+
+
+class UpdateUserRequest(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    department: Optional[str] = None
+
+
+# ── Dashboard ─────────────────────────────────────────────────
 
 @router.get("/dashboard", response_model=AdminDashboardResponse)
 def admin_dashboard(payload: dict = Depends(require_role("admin"))):
-    """University-wide analytics for admin dashboard."""
+    """University-wide stats for admin dashboard."""
     admin = get_supabase_admin()
 
-    # Count students
     students = admin.table("profiles").select("id", count="exact").eq("role", "student").execute()
-    total_students = students.count if students.count else 0
-
-    # Count instructors
     instructors = admin.table("profiles").select("id", count="exact").eq("role", "instructor").execute()
-    total_instructors = instructors.count if instructors.count else 0
+    admins_q = admin.table("profiles").select("id", count="exact").eq("role", "admin").execute()
 
-    # Count active courses
-    courses = admin.table("courses").select("id", count="exact").eq("status", "active").execute()
-    active_courses = courses.count if courses.count else 0
+    active_courses = admin.table("courses").select("id", count="exact").eq("status", "active").execute()
+    draft_courses = admin.table("courses").select("id", count="exact").eq("status", "draft").execute()
 
-    # Count assignments
     assignments = admin.table("assignments").select("id", count="exact").execute()
-    total_assignments = assignments.count if assignments.count else 0
-
-    # Count pending submissions
+    total_subs = admin.table("submissions").select("id", count="exact").execute()
+    graded = admin.table("submissions").select("id", count="exact").eq("status", "graded").execute()
     pending = admin.table("submissions").select("id", count="exact").eq("status", "pending").execute()
-    pending_submissions = pending.count if pending.count else 0
 
     return AdminDashboardResponse(
-        total_students=total_students,
-        total_instructors=total_instructors,
-        active_courses=active_courses,
-        total_assignments=total_assignments,
-        pending_submissions=pending_submissions,
+        total_students=students.count or 0,
+        total_instructors=instructors.count or 0,
+        total_admins=admins_q.count or 0,
+        active_courses=active_courses.count or 0,
+        draft_courses=draft_courses.count or 0,
+        total_assignments=assignments.count or 0,
+        total_submissions=total_subs.count or 0,
+        graded_submissions=graded.count or 0,
+        pending_submissions=pending.count or 0,
     )
 
+
+# ── Users CRUD ────────────────────────────────────────────────
 
 @router.get("/users", response_model=List[AdminUserResponse])
 def list_users(
     role: Optional[str] = None,
-    department: Optional[str] = None,
+    search: Optional[str] = None,
     skip: int = 0,
-    limit: int = 50,
+    limit: int = 100,
     payload: dict = Depends(require_role("admin")),
 ):
-    """List all users with optional filters."""
+    """List all users with optional role filter and search."""
     admin = get_supabase_admin()
 
-    query = admin.table("profiles").select("*")
+    query = admin.table("profiles").select("*").order("created_at", desc=True)
 
     if role:
         query = query.eq("role", role)
-    if department:
-        query = query.eq("department", department)
 
     result = query.range(skip, skip + limit - 1).execute()
 
     if not result.data:
         return []
 
-    return [
-        AdminUserResponse(
+    # Get emails from auth.users via admin API
+    email_map: dict = {}
+    try:
+        auth_users = admin.auth.admin.list_users()
+        for u in auth_users:
+            email_map[str(u.id)] = u.email or ""
+    except Exception:
+        pass
+
+    users = []
+    for u in result.data:
+        full_name = u.get("full_name", "")
+        email = email_map.get(u["id"], "")
+
+        if search:
+            q = search.lower()
+            if q not in full_name.lower() and q not in email.lower() and q not in (u.get("department") or "").lower():
+                continue
+
+        users.append(AdminUserResponse(
             id=u["id"],
-            full_name=u["full_name"],
+            email=email,
+            full_name=full_name,
             role=u["role"],
             department=u.get("department"),
             created_at=u.get("created_at"),
+        ))
+
+    return users
+
+
+@router.post("/users", response_model=AdminUserResponse, status_code=201)
+def create_user(req: CreateUserRequest, payload: dict = Depends(require_role("admin"))):
+    """Admin creates a new user (Supabase Auth + profile)."""
+    admin = get_supabase_admin()
+
+    if req.role not in ("student", "instructor", "admin"):
+        raise HTTPException(status_code=400, detail="Role must be student, instructor, or admin")
+
+    try:
+        auth_resp = admin.auth.admin.create_user({
+            "email": req.email,
+            "password": req.password,
+            "email_confirm": True,
+            "user_metadata": {"role": req.role},
+        })
+
+        if not auth_resp or not auth_resp.user:
+            raise HTTPException(status_code=400, detail="Failed to create auth user")
+
+        user_id = str(auth_resp.user.id)
+
+        admin.table("profiles").insert({
+            "id": user_id,
+            "full_name": req.full_name,
+            "role": req.role,
+            "department": req.department,
+        }).execute()
+
+        return AdminUserResponse(
+            id=user_id,
+            email=req.email,
+            full_name=req.full_name,
+            role=req.role,
+            department=req.department,
         )
-        for u in result.data
-    ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to create user: {str(e)}")
 
 
-@router.get("/students", response_model=List[AdminUserResponse])
-def list_students(
-    department: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 50,
+@router.put("/users/{user_id}", response_model=AdminUserResponse)
+def update_user(
+    user_id: str,
+    req: UpdateUserRequest,
     payload: dict = Depends(require_role("admin")),
 ):
-    """List all students."""
-    return list_users(role="student", department=department, skip=skip, limit=limit, payload=payload)
+    """Update a user's profile (name, role, department)."""
+    admin = get_supabase_admin()
 
+    update_data: dict = {}
+    if req.full_name is not None:
+        update_data["full_name"] = req.full_name
+    if req.role is not None:
+        if req.role not in ("student", "instructor", "admin"):
+            raise HTTPException(status_code=400, detail="Invalid role")
+        update_data["role"] = req.role
+    if req.department is not None:
+        update_data["department"] = req.department
 
-@router.get("/instructors", response_model=List[AdminUserResponse])
-def list_instructors(
-    department: Optional[str] = None,
-    skip: int = 0,
-    limit: int = 50,
-    payload: dict = Depends(require_role("admin")),
-):
-    """List all instructors."""
-    return list_users(role="instructor", department=department, skip=skip, limit=limit, payload=payload)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    result = admin.table("profiles").update(update_data).eq("id", user_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if req.role:
+        try:
+            admin.auth.admin.update_user_by_id(user_id, {"user_metadata": {"role": req.role}})
+        except Exception:
+            pass
+
+    u = result.data[0]
+
+    email = ""
+    try:
+        auth_user = admin.auth.admin.get_user_by_id(user_id)
+        email = auth_user.user.email or ""
+    except Exception:
+        pass
+
+    return AdminUserResponse(
+        id=u["id"],
+        email=email,
+        full_name=u["full_name"],
+        role=u["role"],
+        department=u.get("department"),
+        created_at=u.get("created_at"),
+    )
 
 
 @router.delete("/users/{user_id}")
-def delete_user(
-    user_id: str,
-    payload: dict = Depends(require_role("admin")),
-):
-    """Delete a user."""
+def delete_user(user_id: str, payload: dict = Depends(require_role("admin"))):
+    """Delete a user (profile + auth account)."""
     if user_id == payload.get("sub"):
         raise HTTPException(status_code=400, detail="Cannot delete your own account")
 
     admin = get_supabase_admin()
     admin.table("profiles").delete().eq("id", user_id).execute()
 
+    try:
+        admin.auth.admin.delete_user(user_id)
+    except Exception:
+        pass
+
     return {"message": "User deleted successfully"}
 
 
-@router.get("/courses")
+# ── Courses (admin view) ──────────────────────────────────────
+
+@router.get("/courses", response_model=List[AdminCourseResponse])
 def list_all_courses(
     status: Optional[str] = None,
     payload: dict = Depends(require_role("admin")),
 ):
-    """List all courses (admin view)."""
+    """List all courses with instructor names and student counts."""
     admin = get_supabase_admin()
 
-    query = admin.table("courses").select("*")
-
+    query = admin.table("courses").select("*").order("created_at", desc=True)
     if status:
         query = query.eq("status", status)
 
     result = query.execute()
-    return result.data or []
+    courses = result.data or []
+
+    if not courses:
+        return []
+
+    instructor_ids = list({c["instructor_id"] for c in courses})
+    profiles = admin.table("profiles").select("id, full_name").in_("id", instructor_ids).execute()
+    name_map = {p["id"]: p["full_name"] for p in (profiles.data or [])}
+
+    enrollment_counts: dict = {}
+    for c in courses:
+        count_q = admin.table("enrollments").select("id", count="exact").eq("course_id", c["id"]).execute()
+        enrollment_counts[c["id"]] = count_q.count or 0
+
+    return [
+        AdminCourseResponse(
+            id=c["id"],
+            code=c["code"],
+            title=c["title"],
+            description=c.get("description"),
+            status=c["status"],
+            instructor_id=c["instructor_id"],
+            instructor_name=name_map.get(c["instructor_id"], "Unknown"),
+            student_count=enrollment_counts.get(c["id"], 0),
+            created_at=c.get("created_at"),
+        )
+        for c in courses
+    ]
 
 
-@router.get("/stats")
-def get_system_stats(payload: dict = Depends(require_role("admin"))):
-    """Get system-wide statistics."""
+@router.delete("/courses/{course_id}")
+def delete_course(course_id: str, payload: dict = Depends(require_role("admin"))):
+    """Admin can delete any course."""
     admin = get_supabase_admin()
-
-    students = admin.table("profiles").select("id", count="exact").eq("role", "student").execute()
-    instructors = admin.table("profiles").select("id", count="exact").eq("role", "instructor").execute()
-    admins = admin.table("profiles").select("id", count="exact").eq("role", "admin").execute()
-
-    active_courses = admin.table("courses").select("id", count="exact").eq("status", "active").execute()
-    draft_courses = admin.table("courses").select("id", count="exact").eq("status", "draft").execute()
-
-    total_submissions = admin.table("submissions").select("id", count="exact").execute()
-    graded_submissions = admin.table("submissions").select("id", count="exact").eq("status", "graded").execute()
-
-    return {
-        "users": {
-            "students": students.count or 0,
-            "instructors": instructors.count or 0,
-            "admins": admins.count or 0,
-        },
-        "courses": {
-            "active": active_courses.count or 0,
-            "draft": draft_courses.count or 0,
-        },
-        "submissions": {
-            "total": total_submissions.count or 0,
-            "graded": graded_submissions.count or 0,
-        },
-    }
-
-
-# ── Seed Data Endpoint (Development Only) ────────────────────
-
-@router.post("/seed-data")
-def seed_sample_data():
-    """
-    Seed the database with sample courses, assignments, and enrollments.
-    WARNING: This is for development/demo purposes only!
-    """
-    admin = get_supabase_admin()
-
-    try:
-        # Get the first user to act as instructor
-        profiles = admin.table("profiles").select("id, full_name, role").execute()
-
-        if not profiles.data:
-            raise HTTPException(status_code=400, detail="No users found. Please register at least one user first.")
-
-        # Find an instructor or use first user
-        instructor = next((p for p in profiles.data if p["role"] == "instructor"), profiles.data[0])
-        instructor_id = instructor["id"]
-
-        # Find students
-        students = [p for p in profiles.data if p["role"] == "student"]
-
-        # Check if courses already exist
-        existing = admin.table("courses").select("id").limit(1).execute()
-        if existing.data:
-            return {"message": "Sample data already exists!", "courses": len(existing.data)}
-
-        # Create sample courses
-        courses_data = [
-            {
-                "instructor_id": instructor_id,
-                "code": "CS101",
-                "title": "Introduction to Programming",
-                "description": "Learn the fundamentals of programming using Python.",
-                "status": "active",
-            },
-            {
-                "instructor_id": instructor_id,
-                "code": "CS201",
-                "title": "Data Structures & Algorithms",
-                "description": "Master essential data structures and learn algorithm analysis.",
-                "status": "active",
-            },
-            {
-                "instructor_id": instructor_id,
-                "code": "WEB301",
-                "title": "Full Stack Web Development",
-                "description": "Build modern web applications using React, Node.js, and PostgreSQL.",
-                "status": "active",
-            },
-            {
-                "instructor_id": instructor_id,
-                "code": "AI401",
-                "title": "Machine Learning Fundamentals",
-                "description": "Introduction to machine learning concepts and hands-on projects.",
-                "status": "active",
-            },
-        ]
-
-        courses_result = admin.table("courses").insert(courses_data).execute()
-        created_courses = courses_result.data
-
-        # Create enrollments for students
-        enrollments_created = 0
-        for student in students[:5]:
-            for course in created_courses[:3]:
-                try:
-                    admin.table("enrollments").insert({
-                        "course_id": course["id"],
-                        "student_id": student["id"],
-                    }).execute()
-                    enrollments_created += 1
-                except Exception:
-                    pass
-
-        # Create assignments
-        now = datetime.utcnow()
-        assignments_data = []
-
-        for i, course in enumerate(created_courses):
-            assignments_data.extend([
-                {
-                    "course_id": course["id"],
-                    "title": f"Quiz {i + 1}: Chapter 1 Review",
-                    "due_date": (now + timedelta(days=3 + i)).isoformat(),
-                },
-                {
-                    "course_id": course["id"],
-                    "title": f"Lab Assignment {i + 1}",
-                    "due_date": (now + timedelta(days=7 + i * 2)).isoformat(),
-                },
-            ])
-
-        assignments_result = admin.table("assignments").insert(assignments_data).execute()
-
-        return {
-            "message": "Sample data created successfully!",
-            "courses_created": len(created_courses),
-            "enrollments_created": enrollments_created,
-            "assignments_created": len(assignments_result.data),
-            "instructor": instructor["full_name"],
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error seeding data: {str(e)}")
+    admin.table("courses").delete().eq("id", course_id).execute()
+    return {"message": "Course deleted successfully"}

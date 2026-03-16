@@ -63,6 +63,13 @@ async def login(request: LoginRequest):
 @router.post("/register", response_model=AuthResponse)
 async def register(request: RegisterRequest):
     """Register a new user via Supabase Auth and create a profile."""
+    # Admins cannot self-register
+    if request.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin accounts cannot be created via registration.",
+        )
+
     try:
         supabase = get_supabase_client()
 
